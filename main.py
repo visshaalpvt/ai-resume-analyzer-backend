@@ -6,15 +6,15 @@ import os
 
 # -------------------- CONFIG --------------------
 app = FastAPI(title="AI Resume Analyzer API")
-# Allow frontend requests (CORS fix)
+
+# Allow frontend requests (CORS)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # allow all origins (you can restrict later)
+    allow_origins=["*"],  # allow all origins (can restrict later)
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 
 UPLOAD_DIR = "uploads"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
@@ -44,6 +44,37 @@ REQUIRED_SKILLS = [
     "data structures", "algorithms", "git", "api", "html", "css", "javascript"
 ]
 
+# -------------------- HELPER FUNCTIONS --------------------
+def extract_text_from_pdf(path):
+    """Extract text from a PDF"""
+    text = ""
+    with fitz.open(path) as doc:
+        for page in doc:
+            text += page.get_text()
+    return text.lower()
+
+
+def analyze_resume(text):
+    """Analyze resume text and score it"""
+    found_skills = [skill for skill in REQUIRED_SKILLS if skill in text]
+    missing_skills = [skill for skill in REQUIRED_SKILLS if skill not in text]
+    score = int((len(found_skills) / len(REQUIRED_SKILLS)) * 100)
+
+    suggestions = []
+    if score < 60:
+        suggestions.append("Add more technical skills relevant to your field.")
+    if "project" not in text:
+        suggestions.append("Include at least one project section.")
+    if "experience" not in text:
+        suggestions.append("Add an experience section even for internships.")
+
+    return {
+        "skills_found": found_skills,
+        "skills_missing": missing_skills,
+        "resume_score": f"{score}%",
+        "suggestions": suggestions
+    }
+
 # -------------------- ROUTES --------------------
 
 @app.get("/")
@@ -53,6 +84,7 @@ def root():
 
 @app.post("/upload_resume")
 async def upload_resume(file: UploadFile = File(...)):
+    """Upload and analyze a PDF resume"""
     if not file.filename.endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Please upload a PDF file")
 
@@ -86,22 +118,46 @@ async def upload_resume(file: UploadFile = File(...)):
 
 @app.get("/resumes")
 def get_all_resumes():
+    """Return all resumes in frontend-compatible format"""
     with Session(engine) as session:
         resumes = session.exec(select(ResumeData)).all()
-        return resumes
+        formatted = []
+        for r in resumes:
+            formatted.append({
+                "id": r.id,
+                "filename": r.filename,
+                "analysis": {
+                    "skills_found": r.skills_found.split(", ") if r.skills_found else [],
+                    "skills_missing": r.skills_missing.split(", ") if r.skills_missing else [],
+                    "resume_score": r.resume_score,
+                    "suggestions": r.suggestions.split("; ") if r.suggestions else []
+                }
+            })
+        return formatted
 
 
 @app.get("/resume/{resume_id}")
 def get_resume(resume_id: int):
+    """Return a single resume by ID"""
     with Session(engine) as session:
         resume = session.get(ResumeData, resume_id)
         if not resume:
             raise HTTPException(status_code=404, detail="Resume not found")
-        return resume
+        return {
+            "id": resume.id,
+            "filename": resume.filename,
+            "analysis": {
+                "skills_found": resume.skills_found.split(", ") if resume.skills_found else [],
+                "skills_missing": resume.skills_missing.split(", ") if resume.skills_missing else [],
+                "resume_score": resume.resume_score,
+                "suggestions": resume.suggestions.split("; ") if resume.suggestions else []
+            }
+        }
 
 
 @app.delete("/resume/{resume_id}")
 def delete_resume(resume_id: int):
+    """Delete a resume by ID"""
     with Session(engine) as session:
         resume = session.get(ResumeData, resume_id)
         if not resume:
@@ -113,39 +169,8 @@ def delete_resume(resume_id: int):
 
 @app.delete("/clear_all")
 def clear_all_resumes():
+    """Delete all resumes"""
     with Session(engine) as session:
         session.exec("DELETE FROM resumedata")
         session.commit()
     return {"message": "All resume analyses cleared 🗑️"}
-
-
-# -------------------- HELPER FUNCTIONS --------------------
-def extract_text_from_pdf(path):
-    """Extract text from a PDF"""
-    text = ""
-    with fitz.open(path) as doc:
-        for page in doc:
-            text += page.get_text()
-    return text.lower()
-
-
-def analyze_resume(text):
-    """Analyze resume text and score it"""
-    found_skills = [skill for skill in REQUIRED_SKILLS if skill in text]
-    missing_skills = [skill for skill in REQUIRED_SKILLS if skill not in text]
-    score = int((len(found_skills) / len(REQUIRED_SKILLS)) * 100)
-
-    suggestions = []
-    if score < 60:
-        suggestions.append("Add more technical skills relevant to your field.")
-    if "project" not in text:
-        suggestions.append("Include at least one project section.")
-    if "experience" not in text:
-        suggestions.append("Add an experience section even for internships.")
-
-    return {
-        "skills_found": found_skills,
-        "skills_missing": missing_skills,
-        "resume_score": f"{score}%",
-        "suggestions": suggestions
-    }
